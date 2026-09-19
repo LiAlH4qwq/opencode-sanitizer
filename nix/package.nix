@@ -61,7 +61,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   '';
 
   meta = {
-    description = "opencode plugin that redacts configured strings from context before it is sent to the LLM";
+    description = "opencode plugin that reversibly pseudonymizes configured strings before context is sent to the LLM";
     platforms = lib.platforms.all;
   };
 })

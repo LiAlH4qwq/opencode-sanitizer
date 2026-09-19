@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
@@ -7,7 +8,6 @@ type Rule = {
   name?: string
   pattern: string
   flags?: string
-  replacement?: string
   literal?: boolean
 }
 
@@ -18,7 +18,6 @@ type SanitizeConfig = {
 type CompiledRule = {
   name: string
   regex: RegExp
-  replacement: string
 }
 
 type AnyPart = {
@@ -44,6 +43,14 @@ type Logger = (level: LogLevel, message: string, extra?: Record<string, unknown>
 const APP_NAME = "opencode-sanitizer"
 const APP_CONFIG_FILE = "config.json"
 const PROJECT_CONFIG_FILE = "opencode-sanitizer.json"
+
+const TOKEN_HASH_LEN = 16
+const TOKEN_PREFIX = "<opencode-sanitize:"
+const TOKEN_SUFFIX = ">"
+const TOKEN_RE = new RegExp(
+  `${escapeRegExp(TOKEN_PREFIX)}([0-9a-f]{${TOKEN_HASH_LEN}})${escapeRegExp(TOKEN_SUFFIX)}`,
+  "g",
+)
 
 function appConfigDir(): string {
   const xdg = process.env.XDG_CONFIG_HOME
@@ -71,19 +78,31 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
   let compiled: CompiledRule[] = []
   let lastSignature = ""
 
+  const tokenToText = new Map<string, string>()
+  const textToToken = new Map<string, string>()
+
+  function tokenFor(match: string): string {
+    const existing = textToToken.get(match)
+    if (existing !== undefined) return existing
+    const hash = createHash("sha256").update(match).digest("hex").slice(0, TOKEN_HASH_LEN)
+    const token = `${TOKEN_PREFIX}${hash}${TOKEN_SUFFIX}`
+    textToToken.set(match, token)
+    if (!tokenToText.has(hash)) tokenToText.set(hash, match)
+    return token
+  }
+
   function compile(rules: Rule[]): void {
     const out: CompiledRule[] = []
     for (const rule of rules) {
       if (!rule || typeof rule.pattern !== "string") continue
       const name = rule.name ?? rule.pattern
-      const replacement = typeof rule.replacement === "string" ? rule.replacement : ""
       try {
         if (rule.literal) {
-          out.push({ name, regex: new RegExp(escapeRegExp(rule.pattern), "g"), replacement })
+          out.push({ name, regex: new RegExp(escapeRegExp(rule.pattern), "g") })
           continue
         }
         const flags = rule.flags && rule.flags.includes("g") ? rule.flags : `${rule.flags ?? ""}g`
-        out.push({ name, regex: new RegExp(rule.pattern, flags), replacement })
+        out.push({ name, regex: new RegExp(rule.pattern, flags) })
       } catch (error) {
         void log("warn", `sanitizer: invalid pattern for rule "${name}"`, {
           error: error instanceof Error ? error.message : String(error),
@@ -131,27 +150,42 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
     if (compiled.length === 0 || typeof text !== "string") return text
     let result = text
     for (const rule of compiled) {
-      result = result.replace(rule.regex, rule.replacement)
+      result = result.replace(rule.regex, (match: string) =>
+        match.length === 0 ? match : tokenFor(match),
+      )
     }
     return result
   }
 
-  function sanitizeInPlace(value: unknown, depth = 0): void {
+  function restoreText(text: string): string {
+    if (typeof text !== "string") return text
+    return text.replace(TOKEN_RE, (whole: string, hash: string) => tokenToText.get(hash) ?? whole)
+  }
+
+  function mapInPlace(value: unknown, fn: (text: string) => string, depth = 0): void {
     if (depth > 16 || !value || typeof value !== "object") return
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index++) {
         const item = value[index]
-        if (typeof item === "string") value[index] = sanitizeText(item)
-        else sanitizeInPlace(item, depth + 1)
+        if (typeof item === "string") value[index] = fn(item)
+        else mapInPlace(item, fn, depth + 1)
       }
       return
     }
     const record = value as Record<string, unknown>
     for (const key of Object.keys(record)) {
       const item = record[key]
-      if (typeof item === "string") record[key] = sanitizeText(item)
-      else sanitizeInPlace(item, depth + 1)
+      if (typeof item === "string") record[key] = fn(item)
+      else mapInPlace(item, fn, depth + 1)
     }
+  }
+
+  function sanitizeInPlace(value: unknown, depth = 0): void {
+    mapInPlace(value, sanitizeText, depth)
+  }
+
+  function restoreInPlace(value: unknown, depth = 0): void {
+    mapInPlace(value, restoreText, depth)
   }
 
   function sanitizePart(part: AnyPart): void {
@@ -188,7 +222,7 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
     }
   }
 
-  return { reload, sanitizeText, sanitizeInPlace, sanitizePart }
+  return { reload, sanitizeText, sanitizeInPlace, sanitizePart, restoreText, restoreInPlace }
 }
 
 function createLogger(client: PluginInput["client"]): Logger {
@@ -222,6 +256,12 @@ export const SanitizerPlugin: Plugin = async (input) => {
       for (let index = 0; index < output.system.length; index++) {
         output.system[index] = sanitizer.sanitizeText(output.system[index])
       }
+    },
+    "experimental.text.complete": async (_input, output) => {
+      output.text = sanitizer.restoreText(output.text)
+    },
+    "tool.execute.before": async (_input, output) => {
+      sanitizer.restoreInPlace(output.args)
     },
   }
 }

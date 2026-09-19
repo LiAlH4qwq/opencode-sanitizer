@@ -37,7 +37,6 @@ in
               name = "false-positive-word";
               pattern = "example";
               literal = true;
-              replacement = "[FUZZY]";
             }
           ];
         }

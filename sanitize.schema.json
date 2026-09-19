@@ -29,10 +29,6 @@
             "type": "string",
             "description": "Regular expression flags. The global flag (g) is always added."
           },
-          "replacement": {
-            "type": "string",
-            "description": "Replacement string. Supports $1, $2, $&, $$ capture references. Defaults to empty string."
-          },
           "literal": {
             "type": "boolean",
             "default": false,

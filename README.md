@@ -33,8 +33,11 @@ keyboard. This plugin exists because it happened far too many times.
 
 `opencode-sanitizer` doesn't judge what should or shouldn't be moderated. It does
 exactly one thing: before opencode actually packages the context up and sends it
-to the provider, it **rewrites in place** every string that matches your rules.
-Moderation never sees the thing that set it off, and the session sails on.
+to the provider, it **swaps out** every string that matches your rules for a
+reversible placeholder token. Moderation never sees the thing that set it off,
+the session sails on, and whenever the model echoes one of those tokens back, the
+original string is quietly restored -- so your stored session still reads
+normally.
 
 Incidentally, you can absolutely use it to block keys, tokens, and private keys
 too -- but that's just a side use of the same capability, not the original
@@ -47,22 +50,42 @@ motivation.
 ## How it works
 
 Before opencode assembles a single LLM request, it fires a series of "transform
-hooks". This plugin attaches to two of them:
+hooks". This plugin attaches to several of them:
 
 - `experimental.chat.messages.transform` -- walks every message, part by part
   (`text`, `reasoning`, `subtask`, `tool` state, `file` source), rewriting the
   text within.
 - `experimental.chat.system.transform` -- scrubs each entry of the finally
   assembled system prompt.
+- `experimental.text.complete` -- restores tokens in the assistant's finished
+  prose before it is stored.
+- `tool.execute.before` -- restores tokens in tool arguments, so tools receive
+  the real values instead of a placeholder.
 
 So user messages, the assistant's prose and reasoning, tool output/input/metadata,
 file parts, and the system prompt all get a pass through your rules at the moment
-they go out.
+they go out; and assistant text plus tool arguments get a reverse pass on the way
+back in.
 
-A rule is just an ordinary JavaScript regular expression (or a literal string)
-plus a replacement; the `g` flag is always added automatically. Before each
-transform the plugin checks the config file's mtime and only reparses it when it
-changes -- so you can add or remove rules mid-session without restarting.
+`experimental.chat.messages.transform` already receives a copy of the context, so
+only the outbound request is touched -- the session on disk keeps its originals.
+
+A rule is just an ordinary JavaScript regular expression (or a literal string).
+There is no replacement field any more: each match is replaced by
+`<opencode-sanitize:HASH>`, where `HASH` is the first 16 hex digits of the
+SHA-256 of the matched text. The plugin keeps a `hash -> original` map in memory,
+so the same string always maps to the same token, and the token can be turned
+back into the original whenever the model sends it back. Because the token is
+derived from the match itself rather than from the rule, regex and literal rules
+work identically; only capture-group replacement templates (`$1`, `$&`) are gone.
+The `g` flag is always added automatically. Before each transform the plugin
+checks the config file's mtime and only reparses it when it changes -- so you can
+add or remove rules mid-session without restarting.
+
+Because the map lives only in the plugin's memory for the life of the process,
+an un-restored token cannot be recovered after a restart. In practice the only
+place a token can slip through un-restored is assistant `reasoning` parts, which
+fire no transform hook -- they stay readable to the model but not to you.
 
 ## Configuration
 
@@ -86,13 +109,11 @@ Example:
     {
       "name": "false-positive-word",
       "literal": true,
-      "pattern": "sensitive-word",
-      "replacement": "[FUZZY]"
+      "pattern": "sensitive-word"
     },
     {
       "name": "anthropic-api-key",
-      "pattern": "sk-ant-[A-Za-z0-9_-]{16,}",
-      "replacement": "[REDACTED_ANTHROPIC_KEY]"
+      "pattern": "sk-ant-[A-Za-z0-9_-]{16,}"
     }
   ]
 }
@@ -100,15 +121,15 @@ Example:
 
 Fields:
 
-| Field         | Meaning                                                                     |
-| ------------- | --------------------------------------------------------------------------- |
-| `name`        | A readable name to recognize the rule in logs.                              |
-| `pattern`     | JavaScript regex source; treated as an exact string when `literal` is true. |
-| `flags`       | Regex flags; `g` is always added.                                           |
-| `replacement` | Replacement text; supports `$1`, `$2`, `$&`, `$$`. Defaults to empty.       |
-| `literal`     | Treat `pattern` as a literal instead of a regex.                            |
+| Field     | Meaning                                                                     |
+| --------- | --------------------------------------------------------------------------- |
+| `name`    | A readable name to recognize the rule in logs.                              |
+| `pattern` | JavaScript regex source; treated as an exact string when `literal` is true. |
+| `flags`   | Regex flags; `g` is always added.                                           |
+| `literal` | Treat `pattern` as a literal instead of a regex.                            |
 
-See `sanitize.schema.json` for the full schema.
+Every match is replaced by `<opencode-sanitize:HASH>`; there is no configurable
+replacement text. See `sanitize.schema.json` for the full schema.
 
 ## Installation
 
