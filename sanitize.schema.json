@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/anomalyco/opencode-sanitizer/main/sanitize.schema.json",
+  "title": "opencode-sanitizer configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Reference to this schema file."
+    },
+    "rules": {
+      "type": "array",
+      "description": "Ordered list of rules. Rules run top to bottom on every outbound string.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pattern"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Human readable label used in logs."
+          },
+          "pattern": {
+            "type": "string",
+            "description": "JavaScript regular expression source, or an exact string when literal is true."
+          },
+          "flags": {
+            "type": "string",
+            "description": "Regular expression flags. The global flag (g) is always added."
+          },
+          "replacement": {
+            "type": "string",
+            "description": "Replacement string. Supports $1, $2, $&, $$ capture references. Defaults to empty string."
+          },
+          "literal": {
+            "type": "boolean",
+            "default": false,
+            "description": "Treat pattern as a literal string instead of a regular expression."
+          }
+        }
+      }
+    }
+  }
+}

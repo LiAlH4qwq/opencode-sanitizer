@@ -1,0 +1,30 @@
+{
+  "name": "opencode-sanitizer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.0.0",
+  "engines": {
+    "node": ">=26"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/sanitizer.js",
+  "exports": {
+    ".": {
+      "import": "./dist/sanitizer.js"
+    }
+  },
+  "scripts": {
+    "build": "rolldown -c rolldown.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.18.31",
+    "@opencode-ai/sdk": "^1.18.31",
+    "@types/node": "^26.6.1",
+    "rolldown": "^1.2.9",
+    "typescript": "^7.0.2"
+  }
+}

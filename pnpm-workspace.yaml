@@ -1,0 +1,6 @@
+allowBuilds:
+  msgpackr-extract: false
+
+fetchRetries: 5
+fetchRetryMaxtimeout: 600000
+fetchTimeout: 600000
