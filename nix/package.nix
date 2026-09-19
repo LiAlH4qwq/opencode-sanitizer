@@ -1,7 +1,7 @@
 {
   lib,
   stdenvNoCC,
-  nodejs_26,
+  nodejs_24,
   pnpm_12,
   fetchPnpmDeps,
   pnpmConfigHook,
@@ -32,13 +32,13 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     fetcherVersion = 4;
     hash =
       {
-        x86_64-linux = "sha256-mx4TqlmqfCDf54YnTtxctxj6J7KMu2ILUf8TFd32yCQ=";
+        x86_64-linux = "sha256-Rm0OkBQUEzIJ9qfPpUsQrTmymrGYVBmHA541qgjkwMY=";
       }
       .${stdenvNoCC.hostPlatform.system} or lib.fakeHash;
   };
 
   nativeBuildInputs = [
-    nodejs_26
+    nodejs_24
     pnpm_12
     pnpmConfigHook
   ];
