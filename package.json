@@ -18,9 +18,13 @@
   },
   "scripts": {
     "build": "rolldown -c rolldown.config.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "format": "biome format --write .",
+    "lint": "biome lint .",
+    "check": "biome check --write ."
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
     "@opencode-ai/plugin": "^1.18.31",
     "@opencode-ai/sdk": "^1.18.31",
     "@types/node": "^24",

@@ -38,7 +38,11 @@ type AnyPart = {
 }
 
 type LogLevel = "debug" | "info" | "warn" | "error"
-type Logger = (level: LogLevel, message: string, extra?: Record<string, unknown>) => Promise<void>
+type Logger = (
+  level: LogLevel,
+  message: string,
+  extra?: Record<string, unknown>,
+) => Promise<void>
 
 const APP_NAME = "opencode-sanitizer"
 const APP_CONFIG_FILE = "config.json"
@@ -84,7 +88,10 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
   function tokenFor(match: string): string {
     const existing = textToToken.get(match)
     if (existing !== undefined) return existing
-    const hash = createHash("sha256").update(match).digest("hex").slice(0, TOKEN_HASH_LEN)
+    const hash = createHash("sha256")
+      .update(match)
+      .digest("hex")
+      .slice(0, TOKEN_HASH_LEN)
     const token = `${TOKEN_PREFIX}${hash}${TOKEN_SUFFIX}`
     textToToken.set(match, token)
     if (!tokenToText.has(hash)) tokenToText.set(hash, match)
@@ -98,10 +105,15 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
       const name = rule.name ?? rule.pattern
       try {
         if (rule.literal) {
-          out.push({ name, regex: new RegExp(escapeRegExp(rule.pattern), "g") })
+          out.push({
+            name,
+            regex: new RegExp(escapeRegExp(rule.pattern), "g"),
+          })
           continue
         }
-        const flags = rule.flags && rule.flags.includes("g") ? rule.flags : `${rule.flags ?? ""}g`
+        const flags = rule.flags?.includes("g")
+          ? rule.flags
+          : `${rule.flags ?? ""}g`
         out.push({ name, regex: new RegExp(rule.pattern, flags) })
       } catch (error) {
         void log("warn", `sanitizer: invalid pattern for rule "${name}"`, {
@@ -143,7 +155,9 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
     }
 
     compile(rules)
-    void log("debug", `sanitizer: loaded ${compiled.length} rule(s)`, { paths: loaded })
+    void log("debug", `sanitizer: loaded ${compiled.length} rule(s)`, {
+      paths: loaded,
+    })
   }
 
   function sanitizeText(text: string): string {
@@ -159,10 +173,17 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
 
   function restoreText(text: string): string {
     if (typeof text !== "string") return text
-    return text.replace(TOKEN_RE, (whole: string, hash: string) => tokenToText.get(hash) ?? whole)
+    return text.replace(
+      TOKEN_RE,
+      (whole: string, hash: string) => tokenToText.get(hash) ?? whole,
+    )
   }
 
-  function mapInPlace(value: unknown, fn: (text: string) => string, depth = 0): void {
+  function mapInPlace(
+    value: unknown,
+    fn: (text: string) => string,
+    depth = 0,
+  ): void {
     if (depth > 16 || !value || typeof value !== "object") return
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index++) {
@@ -195,15 +216,20 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
         if (typeof part.text === "string") part.text = sanitizeText(part.text)
         break
       case "subtask":
-        if (typeof part.prompt === "string") part.prompt = sanitizeText(part.prompt)
-        if (typeof part.description === "string") part.description = sanitizeText(part.description)
+        if (typeof part.prompt === "string")
+          part.prompt = sanitizeText(part.prompt)
+        if (typeof part.description === "string")
+          part.description = sanitizeText(part.description)
         break
       case "tool": {
         const state = part.state
         if (state) {
-          if (typeof state.output === "string") state.output = sanitizeText(state.output)
-          if (typeof state.error === "string") state.error = sanitizeText(state.error)
-          if (typeof state.title === "string") state.title = sanitizeText(state.title)
+          if (typeof state.output === "string")
+            state.output = sanitizeText(state.output)
+          if (typeof state.error === "string")
+            state.error = sanitizeText(state.error)
+          if (typeof state.title === "string")
+            state.title = sanitizeText(state.title)
           sanitizeInPlace(state.input)
           sanitizeInPlace(state.metadata)
         }
@@ -222,13 +248,22 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
     }
   }
 
-  return { reload, sanitizeText, sanitizeInPlace, sanitizePart, restoreText, restoreInPlace }
+  return {
+    reload,
+    sanitizeText,
+    sanitizeInPlace,
+    sanitizePart,
+    restoreText,
+    restoreInPlace,
+  }
 }
 
 function createLogger(client: PluginInput["client"]): Logger {
   return async (level, message, extra) => {
     try {
-      await client.app.log({ body: { service: "sanitizer", level, message, extra } })
+      await client.app.log({
+        body: { service: "sanitizer", level, message, extra },
+      })
     } catch {
       return
     }

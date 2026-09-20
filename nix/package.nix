@@ -32,7 +32,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     fetcherVersion = 4;
     hash =
       {
-        x86_64-linux = "sha256-Rm0OkBQUEzIJ9qfPpUsQrTmymrGYVBmHA541qgjkwMY=";
+        x86_64-linux = "sha256-ifyqzU1pDms2nTmSCDwITc2KYP88R9dz1YAeowz6cS8=";
       }
       .${stdenvNoCC.hostPlatform.system} or lib.fakeHash;
   };
