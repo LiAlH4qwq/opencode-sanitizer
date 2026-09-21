@@ -29,23 +29,6 @@ type Candidate = {
   end: number
 }
 
-type AnyPart = {
-  type: string
-  text?: string
-  prompt?: string
-  description?: string
-  source?: { text?: { value?: string } }
-  state?: {
-    output?: string
-    error?: string
-    title?: string
-    input?: unknown
-    metadata?: unknown
-  }
-  metadata?: unknown
-  [key: string]: unknown
-}
-
 type LogLevel = "debug" | "info" | "warn" | "error"
 type Logger = (
   level: LogLevel,
@@ -74,6 +57,48 @@ const SYSTEM_NOTICE = [
   "it. Treat such tokens as meaningless constant identifiers and reproduce them",
   "verbatim, exactly as given, wherever they appear.",
 ].join(" ")
+
+/**
+ * Keys whose string values are protocol identifiers, enums or routing names.
+ * They are never rewritten: tokenizing them would break the request (ids,
+ * `type`, `role`, `tool`, `agent`, ...) rather than hide content.
+ */
+const STRUCTURAL_KEYS: ReadonlySet<string> = new Set([
+  "id",
+  "sessionID",
+  "messageID",
+  "parentID",
+  "partID",
+  "callID",
+  "projectID",
+  "providerID",
+  "modelID",
+  "type",
+  "role",
+  "mode",
+  "status",
+  "tool",
+  "agent",
+  "finish",
+  "reason",
+  "mime",
+  "url",
+])
+
+/**
+ * Keys that contain arbitrary user/tool data. Inside them the structural
+ * exemption is dropped, so a key such as `url` or `type` nested in tool input
+ * is still sanitized.
+ */
+const FREE_FORM_KEYS: ReadonlySet<string> = new Set([
+  "input",
+  "metadata",
+  "summary",
+  "error",
+  "source",
+])
+
+const NO_SKIP: ReadonlySet<string> = new Set()
 
 function appConfigDir(): string {
   const xdg = process.env.XDG_CONFIG_HOME
@@ -277,50 +302,42 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
     }
   }
 
-  function sanitizeInPlace(value: unknown): void {
-    mapInPlace(value, sanitizeText)
-  }
-
   function restoreInPlace(value: unknown): void {
     mapInPlace(value, restoreText)
   }
 
-  function sanitizePart(part: AnyPart): void {
-    switch (part.type) {
-      case "text":
-      case "reasoning":
-        if (typeof part.text === "string") part.text = sanitizeText(part.text)
-        break
-      case "subtask":
-        if (typeof part.prompt === "string")
-          part.prompt = sanitizeText(part.prompt)
-        if (typeof part.description === "string")
-          part.description = sanitizeText(part.description)
-        break
-      case "tool": {
-        const state = part.state
-        if (state) {
-          if (typeof state.output === "string")
-            state.output = sanitizeText(state.output)
-          if (typeof state.error === "string")
-            state.error = sanitizeText(state.error)
-          if (typeof state.title === "string")
-            state.title = sanitizeText(state.title)
-          sanitizeInPlace(state.input)
-          sanitizeInPlace(state.metadata)
-        }
-        sanitizeInPlace(part.metadata)
-        break
+  /**
+   * Sanitizes every string in a message (info and parts) by default, and only
+   * skips values under {@link STRUCTURAL_KEYS}. Nesting inside a free-form key
+   * drops that exemption, so tool input like `{ url: ... }` is still cleaned.
+   * This is a denylist rather than a per-field allowlist, so a field that is
+   * added to the SDK or forgotten by name cannot silently leak.
+   */
+  function sanitizeDeep(
+    value: unknown,
+    seen: WeakSet<object> = new WeakSet(),
+    skip: ReadonlySet<string> = STRUCTURAL_KEYS,
+  ): void {
+    if (!value || typeof value !== "object") return
+    if (seen.has(value)) return
+    seen.add(value)
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index++) {
+        const item = value[index]
+        if (typeof item === "string") value[index] = sanitizeText(item)
+        else sanitizeDeep(item, seen, skip)
       }
-      case "file": {
-        const sourceText = part.source?.text
-        if (sourceText && typeof sourceText.value === "string") {
-          sourceText.value = sanitizeText(sourceText.value)
-        }
-        break
+      return
+    }
+    const record = value as Record<string, unknown>
+    for (const key of Object.keys(record)) {
+      const item = record[key]
+      if (typeof item === "string") {
+        if (!skip.has(key)) record[key] = sanitizeText(item)
+        continue
       }
-      default:
-        break
+      if (!item || typeof item !== "object") continue
+      sanitizeDeep(item, seen, FREE_FORM_KEYS.has(key) ? NO_SKIP : skip)
     }
   }
 
@@ -328,8 +345,7 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
     reload,
     hasRules: () => compiled.length > 0,
     sanitizeText,
-    sanitizeInPlace,
-    sanitizePart,
+    sanitizeDeep,
     restoreText,
     restoreInPlace,
   }
@@ -358,9 +374,7 @@ export const SanitizerPlugin: Plugin = async (input) => {
     "experimental.chat.messages.transform": async (_input, output) => {
       sanitizer.reload()
       for (const message of output.messages) {
-        for (const part of message.parts as unknown as AnyPart[]) {
-          sanitizer.sanitizePart(part)
-        }
+        sanitizer.sanitizeDeep(message)
       }
     },
     "experimental.chat.system.transform": async (_input, output) => {
@@ -369,6 +383,19 @@ export const SanitizerPlugin: Plugin = async (input) => {
         output.system[index] = sanitizer.sanitizeText(output.system[index])
       }
       if (sanitizer.hasRules()) output.system.push(SYSTEM_NOTICE)
+    },
+    "experimental.session.compacting": async (_input, output) => {
+      sanitizer.reload()
+      for (let index = 0; index < output.context.length; index++) {
+        output.context[index] = sanitizer.sanitizeText(output.context[index])
+      }
+      if (typeof output.prompt === "string") {
+        output.prompt = sanitizer.sanitizeText(output.prompt)
+      }
+    },
+    "tool.definition": async (_input, output) => {
+      sanitizer.reload()
+      output.description = sanitizer.sanitizeText(output.description)
     },
     "experimental.text.complete": async (_input, output) => {
       output.text = sanitizer.restoreText(output.text)

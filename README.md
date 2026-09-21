@@ -52,21 +52,25 @@ motivation.
 Before opencode assembles a single LLM request, it fires a series of "transform
 hooks". This plugin attaches to several of them:
 
-- `experimental.chat.messages.transform` -- walks every message, part by part
-  (`text`, `reasoning`, `subtask`, `tool` state, `file` source), rewriting the
-  text within.
+- `experimental.chat.messages.transform` -- deep-scrubs each message: every
+  string in the message info and in all parts (`text`, `reasoning`, `subtask`,
+  `tool` state including `raw` and `attachments`, `file` filename/source, `patch`
+  files, `agent`, `retry` errors), skipping only protocol identifiers such as
+  ids, `type`, `role`, `tool`, `agent`, `status`, `url`, and `mime`.
 - `experimental.chat.system.transform` -- scrubs each entry of the finally
   assembled system prompt, then appends a redaction notice telling the model that
   any `<HINT:HASH>` token is opaque and irreversible.
+- `experimental.session.compacting` -- scrubs the compaction context and prompt.
+- `tool.definition` -- scrubs the tool description that is sent to the model.
 - `experimental.text.complete` -- restores tokens in the assistant's finished
   prose before it is stored.
 - `tool.execute.before` -- restores tokens in tool arguments, so tools receive
   the real values instead of a placeholder.
 
 So user messages, the assistant's prose and reasoning, tool output/input/metadata,
-file parts, and the system prompt all get a pass through your rules at the moment
-they go out; and assistant text plus tool arguments get a reverse pass on the way
-back in.
+file parts, tool descriptions, compaction prompts, and the system prompt all get a
+pass through your rules at the moment they go out; and assistant text plus tool
+arguments get a reverse pass on the way back in.
 
 `experimental.chat.messages.transform` already receives a copy of the context, so
 only the outbound request is touched -- the session on disk keeps its originals.

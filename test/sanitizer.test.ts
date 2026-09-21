@@ -27,6 +27,14 @@ type LooseToolHook = (
   input: unknown,
   output: { args: unknown },
 ) => Promise<void>
+type LooseCompactingHook = (
+  input: unknown,
+  output: { context: string[]; prompt?: string },
+) => Promise<void>
+type LooseToolDefinitionHook = (
+  input: unknown,
+  output: { description: string; parameters: unknown },
+) => Promise<void>
 
 type ScenarioOptions = {
   globalRules?: Record<string, unknown>
@@ -117,16 +125,26 @@ async function withScenario<T>(
   }
 }
 
+type TestMessage = { info: unknown; parts: unknown[] }
+
+async function transformMessages(
+  hooks: Hooks,
+  messages: TestMessage[],
+): Promise<TestMessage[]> {
+  const hook = hooks[
+    "experimental.chat.messages.transform"
+  ] as unknown as LooseMessagesHook
+  const output = { messages }
+  await hook({}, output)
+  return output.messages
+}
+
 async function sanitizeParts(
   hooks: Hooks,
   parts: unknown[],
 ): Promise<unknown[]> {
-  const hook = hooks[
-    "experimental.chat.messages.transform"
-  ] as unknown as LooseMessagesHook
-  const output = { messages: [{ info: {}, parts }] }
-  await hook({}, output)
-  return output.messages[0].parts
+  const messages = await transformMessages(hooks, [{ info: {}, parts }])
+  return messages[0].parts
 }
 
 async function sanitizeText(hooks: Hooks, text: string): Promise<string> {
@@ -160,6 +178,26 @@ async function restoreArgs(hooks: Hooks, args: unknown): Promise<unknown> {
   const output = { args }
   await hook({}, output)
   return output.args
+}
+
+async function compact(
+  hooks: Hooks,
+  output: { context: string[]; prompt?: string },
+): Promise<{ context: string[]; prompt?: string }> {
+  const hook = hooks[
+    "experimental.session.compacting"
+  ] as unknown as LooseCompactingHook
+  await hook({}, output)
+  return output
+}
+
+async function defineTool(
+  hooks: Hooks,
+  output: { description: string; parameters: unknown },
+): Promise<{ description: string; parameters: unknown }> {
+  const hook = hooks["tool.definition"] as unknown as LooseToolDefinitionHook
+  await hook({}, output)
+  return output
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -384,6 +422,240 @@ describe("part sanitization", () => {
         assertToken(asRecord(source.text).value as string)
       },
     )
+  })
+})
+
+describe("coverage", () => {
+  const SECRET = { projectRules: { p: { pattern: "secret" } } }
+
+  test("sanitizes message.info summary and system", async () => {
+    await withScenario(SECRET, async ({ hooks }) => {
+      const [message] = await transformMessages(hooks, [
+        {
+          info: {
+            id: "msg-1",
+            sessionID: "ses-1",
+            role: "user",
+            agent: "build",
+            model: { providerID: "openai", modelID: "gpt" },
+            summary: { title: "secret", body: "secret", diffs: [] },
+            system: "secret",
+          },
+          parts: [],
+        },
+      ])
+      const info = asRecord(message.info)
+      assertToken(asRecord(info.summary).title as string)
+      assertToken(asRecord(info.summary).body as string)
+      assertToken(info.system as string)
+      assert.equal(info.id, "msg-1")
+      assert.equal(info.sessionID, "ses-1")
+      assert.equal(info.role, "user")
+      assert.equal(info.agent, "build")
+    })
+  })
+
+  test("sanitizes tool state raw and attachments", async () => {
+    await withScenario(SECRET, async ({ hooks }) => {
+      const parts = await sanitizeParts(hooks, [
+        {
+          type: "tool",
+          id: "part-1",
+          callID: "call-1",
+          tool: "read",
+          state: { status: "pending", input: {}, raw: "secret" },
+        },
+        {
+          type: "tool",
+          id: "part-2",
+          callID: "call-2",
+          tool: "read",
+          state: {
+            status: "completed",
+            input: {},
+            output: "",
+            title: "",
+            metadata: {},
+            attachments: [
+              {
+                type: "file",
+                id: "file-1",
+                filename: "secret",
+                url: "https://example.com/x",
+                mime: "text/plain",
+                source: {
+                  text: { value: "secret" },
+                  type: "file",
+                  path: "secret",
+                },
+              },
+            ],
+          },
+        },
+      ])
+      const pending = asRecord(asRecord(parts[0]).state)
+      assertToken(pending.raw as string)
+      assert.equal(pending.status, "pending")
+      const attachment = asRecord(
+        (asRecord(asRecord(parts[1]).state).attachments as unknown[])[0],
+      )
+      assertToken(attachment.filename as string)
+      assert.equal(attachment.url, "https://example.com/x")
+      assert.equal(attachment.mime, "text/plain")
+      assertToken(asRecord(asRecord(attachment.source).text).value as string)
+    })
+  })
+
+  test("sanitizes file part filename and symbol source", async () => {
+    await withScenario(SECRET, async ({ hooks }) => {
+      const parts = await sanitizeParts(hooks, [
+        {
+          type: "file",
+          id: "file-1",
+          filename: "secret",
+          url: "https://example.com/x",
+          mime: "text/plain",
+          source: {
+            type: "symbol",
+            path: "secret",
+            range: {
+              start: { line: 0, character: 0 },
+              end: { line: 0, character: 1 },
+            },
+            name: "secret",
+            kind: 12,
+            text: { value: "secret" },
+          },
+        },
+      ])
+      const part = asRecord(parts[0])
+      assertToken(part.filename as string)
+      const source = asRecord(part.source)
+      assertToken(source.path as string)
+      assertToken(source.name as string)
+      assertToken(asRecord(source.text).value as string)
+      assert.equal(part.url, "https://example.com/x")
+    })
+  })
+
+  test("sanitizes patch files and agent parts", async () => {
+    await withScenario(SECRET, async ({ hooks }) => {
+      const parts = await sanitizeParts(hooks, [
+        { type: "patch", id: "p", hash: "h", files: ["secret", "keep"] },
+        { type: "agent", id: "a", name: "secret", source: { value: "secret" } },
+      ])
+      assertToken((asRecord(parts[0]).files as string[])[0])
+      assert.equal((asRecord(parts[0]).files as string[])[1], "keep")
+      const agent = asRecord(parts[1])
+      assertToken(agent.name as string)
+      assertToken(asRecord(agent.source).value as string)
+    })
+  })
+
+  test("sanitizes retry errors", async () => {
+    await withScenario(SECRET, async ({ hooks }) => {
+      const parts = await sanitizeParts(hooks, [
+        {
+          type: "retry",
+          id: "r",
+          attempt: 1,
+          error: { name: "APIError", data: { message: "secret" } },
+        },
+      ])
+      const error = asRecord(asRecord(parts[0]).error)
+      assertToken(asRecord(error.data).message as string)
+    })
+  })
+
+  test("sanitizes a free-form key nested in tool input", async () => {
+    await withScenario(SECRET, async ({ hooks }) => {
+      const parts = await sanitizeParts(hooks, [
+        {
+          type: "tool",
+          id: "part",
+          callID: "call",
+          tool: "fetch",
+          state: { status: "completed", input: { url: "secret" } },
+        },
+      ])
+      const state = asRecord(asRecord(parts[0]).state)
+      assertToken(asRecord(state.input).url as string)
+    })
+  })
+
+  test("never rewrites structural identifiers", async () => {
+    await withScenario(
+      { projectRules: { word: { pattern: "\\w+" } } },
+      async ({ hooks }) => {
+        const [message] = await transformMessages(hooks, [
+          {
+            info: {
+              id: "abc123",
+              sessionID: "sess1",
+              role: "user",
+              agent: "build",
+              model: { providerID: "openai", modelID: "gpt" },
+            },
+            parts: [
+              {
+                type: "tool",
+                id: "part1",
+                callID: "call1",
+                tool: "read",
+                state: {
+                  status: "completed",
+                  input: { secret: "secret" },
+                  output: "secret",
+                  title: "secret",
+                },
+              },
+            ],
+          },
+        ])
+        const info = asRecord(message.info)
+        assert.equal(info.id, "abc123")
+        assert.equal(info.sessionID, "sess1")
+        assert.equal(info.role, "user")
+        assert.equal(info.agent, "build")
+        assert.deepEqual(info.model, { providerID: "openai", modelID: "gpt" })
+        const part = asRecord(message.parts[0])
+        assert.equal(part.id, "part1")
+        assert.equal(part.callID, "call1")
+        assert.equal(part.tool, "read")
+        const state = asRecord(part.state)
+        assert.equal(state.status, "completed")
+        assertToken(asRecord(state.input).secret as string)
+        assertToken(state.output as string)
+        assertToken(state.title as string)
+      },
+    )
+  })
+
+  test("sanitizes compaction context and prompt", async () => {
+    await withScenario(SECRET, async ({ hooks }) => {
+      const output = await compact(hooks, {
+        context: ["secret"],
+        prompt: "secret",
+      })
+      assertToken(output.context[0])
+      assertToken(output.prompt as string)
+    })
+  })
+
+  test("sanitizes tool definition description but not parameters", async () => {
+    await withScenario(SECRET, async ({ hooks }) => {
+      const parameters = {
+        type: "object",
+        properties: { a: { type: "string" } },
+        required: ["a"],
+      }
+      const output = await defineTool(hooks, {
+        description: "secret",
+        parameters,
+      })
+      assertToken(output.description)
+      assert.deepEqual(output.parameters, parameters)
+    })
   })
 })
 

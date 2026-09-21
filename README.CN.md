@@ -42,15 +42,21 @@ HTTP 400 Bad Request
 
 opencode 在拼装一次 LLM 请求前，会依次触发若干"变换钩子"。本插件挂上其中几个：
 
-- `experimental.chat.messages.transform`——逐条消息、逐个 part 地过一遍
-  （`text`、`reasoning`、`subtask`、`tool` 状态、`file` 来源），改写其中的文本。
+- `experimental.chat.messages.transform`——**深度清洗每条消息**：message info 与所有
+  part 里的每个字符串（`text`、`reasoning`、`subtask`、`tool` 状态含 `raw` 与
+  `attachments`、`file` 的 filename/source、`patch` 的 files、`agent`、`retry`
+  的 error）都会过一遍；只跳过协议标识符，如各类 id、`type`、`role`、`tool`、
+  `agent`、`status`、`url`、`mime`。
 - `experimental.chat.system.transform`——对最终拼好的系统提示词逐项清洗，并追加一段
   脱敏声明，告诉模型任何 `<HINT:HASH>` 令牌都是不可逆的不透明占位符。
+- `experimental.session.compacting`——清洗压缩上下文的 `context` 与 `prompt`。
+- `tool.definition`——清洗发给模型的工具 `description`。
 - `experimental.text.complete`——在助手正文落盘前，把其中的令牌还原。
 - `tool.execute.before`——把工具参数里的令牌还原，让工具拿到真实值而不是占位符。
 
-于是，用户消息、助手正文与推理、工具的输出/输入/元数据、文件片段、系统提示词，
-都会在出站那一刻按你的规则洗一遍；而助手正文和工具参数会在回程时反向还原一遍。
+于是，用户消息、助手正文与推理、工具的输出/输入/元数据、文件片段、工具描述、压缩提示
+词、系统提示词，都会在出站那一刻按你的规则洗一遍；而助手正文和工具参数会在回程时反向
+还原一遍。
 
 `experimental.chat.messages.transform` 拿到的本就是上下文的副本，所以被改动的只有
 出站请求——磁盘上的会话仍保留原文。
