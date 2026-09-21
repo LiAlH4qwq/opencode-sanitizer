@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/anomalyco/opencode-sanitizer/main/sanitize.schema.json",
+  "$id": "https://raw.githubusercontent.com/lialh4qwq/opencode-sanitizer/main/sanitize.schema.json",
   "title": "opencode-sanitizer configuration",
   "type": "object",
   "additionalProperties": false,
@@ -11,8 +11,8 @@
     },
     "defaultPlaceholderHint": {
       "type": "string",
-      "default": "opencode-sanitizer-identifier-keep-it-as-is",
-      "description": "Hint used by rules that do not set their own placeholderHint. Each match is replaced by <HINT:HASH>."
+      "default": "6f1a3c8e-2b47-4d90-a15f-9c3e7b0d8214",
+      "description": "Hint used by rules that do not set their own placeholderHint. Each match is replaced by <HINT:HASH>. Defaults to an opaque, meaningless identifier so the model is less tempted to decode it; use something non-descriptive."
     },
     "rules": {
       "type": "object",

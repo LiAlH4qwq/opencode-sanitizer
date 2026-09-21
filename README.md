@@ -56,7 +56,8 @@ hooks". This plugin attaches to several of them:
   (`text`, `reasoning`, `subtask`, `tool` state, `file` source), rewriting the
   text within.
 - `experimental.chat.system.transform` -- scrubs each entry of the finally
-  assembled system prompt.
+  assembled system prompt, then appends a redaction notice telling the model that
+  any `<HINT:HASH>` token is opaque and irreversible.
 - `experimental.text.complete` -- restores tokens in the assistant's finished
   prose before it is stored.
 - `tool.execute.before` -- restores tokens in tool arguments, so tools receive
@@ -73,11 +74,15 @@ only the outbound request is touched -- the session on disk keeps its originals.
 Rules are declared as a map keyed by name, and each rule is just an ordinary
 JavaScript regular expression (or a literal string). There is no replacement
 field any more: each match is replaced by `<HINT:HASH>`. `HASH` is the first 16
-hex digits of the SHA-256 of the matched text, and `HINT` defaults to
-`opencode-sanitizer-identifier-keep-it-as-is` -- a deliberately verbose,
-imperative hint that tells the model to keep the identifier as-is, so it is less
-likely to "helpfully" rewrite or translate the placeholder and break
-restoration. The plugin keeps a `hash -> original` map in memory, so the same
+hex digits of the SHA-256 of the matched text, and `HINT` defaults to an opaque,
+meaningless identifier (`6f1a3c8e-2b47-4d90-a15f-9c3e7b0d8214`). An earlier
+design used a verbose, imperative hint here, but models -- especially reasoning
+models -- tended to fixate on it and try to recover the original text, which is
+counterproductive: DeepSeek, for one, aborts the stream the moment a sensitive
+word shows up in streaming reasoning. The opaque hint removes that semantic hook,
+and the redaction notice injected into the system prompt supplies the "copy it
+verbatim, don't decode it" instruction instead. The plugin keeps a
+`hash -> original` map in memory, so the same
 string always maps to the same token, and the token can be turned back into the
 original whenever the model sends it back. Because the token is derived from the
 match itself rather than from the rule, regex and literal rules work identically;
@@ -109,8 +114,8 @@ Example:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/anomalyco/opencode-sanitizer/main/sanitize.schema.json",
-  "defaultPlaceholderHint": "opencode-sanitizer-identifier-keep-it-as-is",
+  "$schema": "https://raw.githubusercontent.com/lialh4qwq/opencode-sanitizer/main/sanitize.schema.json",
+  "defaultPlaceholderHint": "6f1a3c8e-2b47-4d90-a15f-9c3e7b0d8214",
   "rules": {
     "false-positive-word": {
       "literal": true,
@@ -152,7 +157,7 @@ own package, so you don't have to wire up the overlay yourself:
 
 ```nix
 {
-  inputs.opencode-sanitizer.url = "github:anomalyco/opencode-sanitizer";
+  inputs.opencode-sanitizer.url = "github:lialh4qwq/opencode-sanitizer";
 
   # in your home-manager configuration
   imports = [ inputs.opencode-sanitizer.homeModules.default ];

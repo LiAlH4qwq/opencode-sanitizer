@@ -44,7 +44,8 @@ opencode 在拼装一次 LLM 请求前，会依次触发若干"变换钩子"。�
 
 - `experimental.chat.messages.transform`——逐条消息、逐个 part 地过一遍
   （`text`、`reasoning`、`subtask`、`tool` 状态、`file` 来源），改写其中的文本。
-- `experimental.chat.system.transform`——对最终拼好的系统提示词逐项清洗。
+- `experimental.chat.system.transform`——对最终拼好的系统提示词逐项清洗，并追加一段
+  脱敏声明，告诉模型任何 `<HINT:HASH>` 令牌都是不可逆的不透明占位符。
 - `experimental.text.complete`——在助手正文落盘前，把其中的令牌还原。
 - `tool.execute.before`——把工具参数里的令牌还原，让工具拿到真实值而不是占位符。
 
@@ -56,10 +57,12 @@ opencode 在拼装一次 LLM 请求前，会依次触发若干"变换钩子"。�
 
 规则以名称为键写成一张 map，每条规则就是一段普通的 JavaScript 正则（或字面量
 字符串）。配置里不再有替换值字段：每个命中项都会被替换成 `<HINT:HASH>`。其中
-`HASH` 是命中文本 SHA-256 的前 16 个十六进制字符；`HINT` 默认为
-`opencode-sanitizer-identifier-keep-it-as-is`——一句刻意写得冗长、带命令语气的
-提示，用来告诉模型「原样保留这个标识符」，降低模型自作主张改写或翻译占位符、
-导致无法还原的概率。插件在内存里维护一张 `hash -> 原文` 的表，因此同一段字符串
+`HASH` 是命中文本 SHA-256 的前 16 个十六进制字符；`HINT` 默认为一个不透明、无意
+义的标识符（`6f1a3c8e-2b47-4d90-a15f-9c3e7b0d8214`）。早期设计用的是冗长、带命令
+语气的提示，但模型（尤其是推理模型）反而容易盯着它、试图还原出原文——这正好适得
+其反：以 DeepSeek 为例，流式思考里一旦出现敏感词，它会直接中断流。换成不透明
+hint 后就没有这个语义抓手了，「原样复制、不要去解码」的指令改由插件注入系统提示
+词的脱敏声明来承担。插件在内存里维护一张 `hash -> 原文` 的表，因此同一段字符串
 永远对应同一个令牌，而模型把令牌发回来时也能还原成原文。由于令牌是从命中内容而非
 规则推导出来的，正则与字面量规则的行为完全一致；唯一失去的是捕获组替换模板
 （`$1`、`$&`）。`g` 标志始终自动补上。插件会在每次变换前检查配置文件的 mtime，只有
@@ -84,8 +87,8 @@ opencode 在拼装一次 LLM 请求前，会依次触发若干"变换钩子"。�
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/anomalyco/opencode-sanitizer/main/sanitize.schema.json",
-  "defaultPlaceholderHint": "opencode-sanitizer-identifier-keep-it-as-is",
+  "$schema": "https://raw.githubusercontent.com/lialh4qwq/opencode-sanitizer/main/sanitize.schema.json",
+  "defaultPlaceholderHint": "6f1a3c8e-2b47-4d90-a15f-9c3e7b0d8214",
   "rules": {
     "false-positive-word": {
       "literal": true,
@@ -127,7 +130,7 @@ flake 暴露：
 
 ```nix
 {
-  inputs.opencode-sanitizer.url = "github:anomalyco/opencode-sanitizer";
+  inputs.opencode-sanitizer.url = "github:lialh4qwq/opencode-sanitizer";
 
   # 在你的 home-manager 配置中
   imports = [ inputs.opencode-sanitizer.homeModules.default ];

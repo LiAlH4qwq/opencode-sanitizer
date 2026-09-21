@@ -51,9 +51,20 @@ const APP_CONFIG_FILE = "config.json"
 const PROJECT_CONFIG_FILE = "opencode-sanitizer.json"
 
 const TOKEN_HASH_LEN = 16
-const DEFAULT_PLACEHOLDER_HINT = "opencode-sanitizer-identifier-keep-it-as-is"
+const DEFAULT_PLACEHOLDER_HINT = "6f1a3c8e-2b47-4d90-a15f-9c3e7b0d8214"
 const INVALID_HINT_RE = /[<>:]/
 const TOKEN_RE = new RegExp(`<[^<>:]+:([0-9a-f]{${TOKEN_HASH_LEN}})>`, "g")
+
+const SYSTEM_NOTICE = [
+  "Redaction notice: a token shaped like `<HINT:HASH>` -- angle brackets around",
+  "a label, a colon, then 16 lowercase hex characters -- is an opaque,",
+  "irreversible placeholder that replaced sensitive text before it reached you.",
+  "It carries no recoverable meaning. Never attempt to decode, guess,",
+  "reconstruct, restore, translate, explain, or speculate about what it",
+  "replaced, and never emit the original text even if you believe you can infer",
+  "it. Treat such tokens as meaningless constant identifiers and reproduce them",
+  "verbatim, exactly as given, wherever they appear.",
+].join(" ")
 
 function appConfigDir(): string {
   const xdg = process.env.XDG_CONFIG_HOME
@@ -270,6 +281,7 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
 
   return {
     reload,
+    hasRules: () => compiled.length > 0,
     sanitizeText,
     sanitizeInPlace,
     sanitizePart,
@@ -311,6 +323,7 @@ export const SanitizerPlugin: Plugin = async (input) => {
       for (let index = 0; index < output.system.length; index++) {
         output.system[index] = sanitizer.sanitizeText(output.system[index])
       }
+      if (sanitizer.hasRules()) output.system.push(SYSTEM_NOTICE)
     },
     "experimental.text.complete": async (_input, output) => {
       output.text = sanitizer.restoreText(output.text)
