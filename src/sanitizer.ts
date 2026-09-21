@@ -5,18 +5,20 @@ import { join, resolve } from "node:path"
 import type { Plugin, PluginInput } from "@opencode-ai/plugin"
 
 type Rule = {
-  name?: string
   pattern: string
   flags?: string
   literal?: boolean
+  placeholderHint?: string
 }
 
 type SanitizeConfig = {
-  rules?: Rule[]
+  defaultPlaceholderHint?: string
+  rules?: Record<string, Rule>
 }
 
 type CompiledRule = {
   name: string
+  hint: string
   regex: RegExp
 }
 
@@ -49,12 +51,9 @@ const APP_CONFIG_FILE = "config.json"
 const PROJECT_CONFIG_FILE = "opencode-sanitizer.json"
 
 const TOKEN_HASH_LEN = 16
-const TOKEN_PREFIX = "<opencode-sanitize:"
-const TOKEN_SUFFIX = ">"
-const TOKEN_RE = new RegExp(
-  `${escapeRegExp(TOKEN_PREFIX)}([0-9a-f]{${TOKEN_HASH_LEN}})${escapeRegExp(TOKEN_SUFFIX)}`,
-  "g",
-)
+const DEFAULT_PLACEHOLDER_HINT = "opencode-sanitizer-identifier-keep-it-as-is"
+const INVALID_HINT_RE = /[<>:]/
+const TOKEN_RE = new RegExp(`<[^<>:]+:([0-9a-f]{${TOKEN_HASH_LEN}})>`, "g")
 
 function appConfigDir(): string {
   const xdg = process.env.XDG_CONFIG_HOME
@@ -63,9 +62,10 @@ function appConfigDir(): string {
 }
 
 /**
- * Config sources. There is no precedence between them: the working-directory
- * `opencode-sanitizer.json` and the XDG config are both loaded and their rules
- * are applied together. The payload defaults to empty when neither exists.
+ * Config sources, highest precedence first. Both are loaded and their rules
+ * merged by name; when the same name appears in both, or both set
+ * `defaultPlaceholderHint`, the working-directory `opencode-sanitizer.json`
+ * wins over the XDG config. The payload defaults to empty when neither exists.
  */
 function configPaths(directory: string): string[] {
   return [
@@ -85,28 +85,36 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
   const tokenToText = new Map<string, string>()
   const textToToken = new Map<string, string>()
 
-  function tokenFor(match: string): string {
-    const existing = textToToken.get(match)
+  function resolveHint(hint: string | undefined, fallback: string): string {
+    if (typeof hint !== "string" || hint.length === 0) return fallback
+    if (INVALID_HINT_RE.test(hint)) return fallback
+    return hint
+  }
+
+  function tokenFor(match: string, hint: string): string {
+    const key = `${hint}\u0000${match}`
+    const existing = textToToken.get(key)
     if (existing !== undefined) return existing
     const hash = createHash("sha256")
       .update(match)
       .digest("hex")
       .slice(0, TOKEN_HASH_LEN)
-    const token = `${TOKEN_PREFIX}${hash}${TOKEN_SUFFIX}`
-    textToToken.set(match, token)
+    const token = `<${hint}:${hash}>`
+    textToToken.set(key, token)
     if (!tokenToText.has(hash)) tokenToText.set(hash, match)
     return token
   }
 
-  function compile(rules: Rule[]): void {
+  function compile(rules: Record<string, Rule>, defaultHint: string): void {
     const out: CompiledRule[] = []
-    for (const rule of rules) {
+    for (const [name, rule] of Object.entries(rules)) {
       if (!rule || typeof rule.pattern !== "string") continue
-      const name = rule.name ?? rule.pattern
+      const hint = resolveHint(rule.placeholderHint, defaultHint)
       try {
         if (rule.literal) {
           out.push({
             name,
+            hint,
             regex: new RegExp(escapeRegExp(rule.pattern), "g"),
           })
           continue
@@ -114,7 +122,7 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
         const flags = rule.flags?.includes("g")
           ? rule.flags
           : `${rule.flags ?? ""}g`
-        out.push({ name, regex: new RegExp(rule.pattern, flags) })
+        out.push({ name, hint, regex: new RegExp(rule.pattern, flags) })
       } catch (error) {
         void log("warn", `sanitizer: invalid pattern for rule "${name}"`, {
           error: error instanceof Error ? error.message : String(error),
@@ -139,12 +147,24 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
     if (signature === lastSignature) return
     lastSignature = signature
 
-    const rules: Rule[] = []
+    const rules: Record<string, Rule> = {}
+    let defaultHint: string | undefined
     const loaded: string[] = []
     for (const path of present) {
       try {
         const config = JSON.parse(readFileSync(path, "utf8")) as SanitizeConfig
-        if (Array.isArray(config.rules)) rules.push(...config.rules)
+        if (
+          defaultHint === undefined &&
+          typeof config.defaultPlaceholderHint === "string" &&
+          config.defaultPlaceholderHint.length > 0
+        ) {
+          defaultHint = config.defaultPlaceholderHint
+        }
+        if (config.rules && typeof config.rules === "object") {
+          for (const [name, rule] of Object.entries(config.rules)) {
+            if (!(name in rules)) rules[name] = rule
+          }
+        }
         loaded.push(path)
       } catch (error) {
         void log("warn", "sanitizer: failed to load config", {
@@ -154,7 +174,7 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
       }
     }
 
-    compile(rules)
+    compile(rules, resolveHint(defaultHint, DEFAULT_PLACEHOLDER_HINT))
     void log("debug", `sanitizer: loaded ${compiled.length} rule(s)`, {
       paths: loaded,
     })
@@ -165,7 +185,7 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
     let result = text
     for (const rule of compiled) {
       result = result.replace(rule.regex, (match: string) =>
-        match.length === 0 ? match : tokenFor(match),
+        match.length === 0 ? match : tokenFor(match, rule.hint),
       )
     }
     return result

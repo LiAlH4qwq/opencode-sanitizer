@@ -9,18 +9,19 @@
       "type": "string",
       "description": "Reference to this schema file."
     },
+    "defaultPlaceholderHint": {
+      "type": "string",
+      "default": "opencode-sanitizer-identifier-keep-it-as-is",
+      "description": "Hint used by rules that do not set their own placeholderHint. Each match is replaced by <HINT:HASH>."
+    },
     "rules": {
-      "type": "array",
-      "description": "Ordered list of rules. Rules run top to bottom on every outbound string.",
-      "items": {
+      "type": "object",
+      "description": "Map of rule name to rule. The key is the name used in logs. Rules whose key collides with one from the other config file are taken from the working-directory config.",
+      "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
         "required": ["pattern"],
         "properties": {
-          "name": {
-            "type": "string",
-            "description": "Human readable label used in logs."
-          },
           "pattern": {
             "type": "string",
             "description": "JavaScript regular expression source, or an exact string when literal is true."
@@ -33,6 +34,10 @@
             "type": "boolean",
             "default": false,
             "description": "Treat pattern as a literal string instead of a regular expression."
+          },
+          "placeholderHint": {
+            "type": "string",
+            "description": "Overrides defaultPlaceholderHint for this rule. Must not contain <, > or :."
           }
         }
       }

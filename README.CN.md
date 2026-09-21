@@ -54,9 +54,12 @@ opencode 在拼装一次 LLM 请求前，会依次触发若干"变换钩子"。�
 `experimental.chat.messages.transform` 拿到的本就是上下文的副本，所以被改动的只有
 出站请求——磁盘上的会话仍保留原文。
 
-每条规则就是一段普通的 JavaScript 正则（或字面量字符串）。配置里不再有替换值字段：
-每个命中项都会被替换成 `<opencode-sanitize:HASH>`，其中 `HASH` 是命中文本 SHA-256
-的前 16 个十六进制字符。插件在内存里维护一张 `hash -> 原文` 的表，因此同一段字符串
+规则以名称为键写成一张 map，每条规则就是一段普通的 JavaScript 正则（或字面量
+字符串）。配置里不再有替换值字段：每个命中项都会被替换成 `<HINT:HASH>`。其中
+`HASH` 是命中文本 SHA-256 的前 16 个十六进制字符；`HINT` 默认为
+`opencode-sanitizer-identifier-keep-it-as-is`——一句刻意写得冗长、带命令语气的
+提示，用来告诉模型「原样保留这个标识符」，降低模型自作主张改写或翻译占位符、
+导致无法还原的概率。插件在内存里维护一张 `hash -> 原文` 的表，因此同一段字符串
 永远对应同一个令牌，而模型把令牌发回来时也能还原成原文。由于令牌是从命中内容而非
 规则推导出来的，正则与字面量规则的行为完全一致；唯一失去的是捕获组替换模板
 （`$1`、`$&`）。`g` 标志始终自动补上。插件会在每次变换前检查配置文件的 mtime，只有
@@ -68,45 +71,46 @@ opencode 在拼装一次 LLM 请求前，会依次触发若干"变换钩子"。�
 
 ## 配置
 
-插件会同时读取两个位置，把两边的规则**合并**在一起生效，二者没有先后、没有覆盖：
+插件会读取两个位置，按名称把两边的规则**合并**生效：
 
-1. `<opencode 工作目录>/opencode-sanitizer.json`
+1. `<opencode 工作目录>/opencode-sanitizer.json`（冲突时优先）
 2. `$XDG_CONFIG_HOME/opencode-sanitizer/config.json`（未设置 `XDG_CONFIG_HOME` 时为
    `~/.config/opencode-sanitizer/config.json`）
 
-两个文件都不存在时，规则集为空——插件什么都不改，与没装完全一样。仓库本身也不
-附带任何默认配置。
+同名的规则以工作目录里的为准，`defaultPlaceholderHint` 也一样。两个文件都不存在
+时，规则集为空——插件什么都不改，与没装完全一样。仓库本身也不附带任何默认配置。
 
 示例：
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/anomalyco/opencode-sanitizer/main/sanitize.schema.json",
-  "rules": [
-    {
-      "name": "false-positive-word",
+  "defaultPlaceholderHint": "opencode-sanitizer-identifier-keep-it-as-is",
+  "rules": {
+    "false-positive-word": {
       "literal": true,
       "pattern": "敏感词"
     },
-    {
-      "name": "anthropic-api-key",
+    "anthropic-api-key": {
       "pattern": "sk-ant-[A-Za-z0-9_-]{16,}"
     }
-  ]
+  }
 }
 ```
 
 字段说明：
 
-| 字段      | 含义                                                           |
-| --------- | -------------------------------------------------------------- |
-| `name`    | 便于日志辨认的可读名称。                                       |
-| `pattern` | JavaScript 正则源码；`literal` 为 `true` 时按精确字符串处理。 |
-| `flags`   | 正则标志，`g` 始终会被补上。                                   |
-| `literal` | 把 `pattern` 当字面量，而不是正则。                            |
+| 字段                           | 含义                                                           |
+| ------------------------------ | -------------------------------------------------------------- |
+| `defaultPlaceholderHint`       | 未单独设置 `placeholderHint` 的规则所用的提示。                |
+| `rules`                        | 规则名到规则的 map；键名就是日志里显示的名称。                |
+| `rules.<name>.pattern`         | JavaScript 正则源码；`literal` 为 `true` 时按精确字符串处理。 |
+| `rules.<name>.flags`           | 正则标志，`g` 始终会被补上。                                   |
+| `rules.<name>.literal`         | 把 `pattern` 当字面量，而不是正则。                            |
+| `rules.<name>.placeholderHint` | 为该规则覆盖 `defaultPlaceholderHint`。                       |
 
-每个命中项都会被替换成 `<opencode-sanitize:HASH>`，没有可配置的替换文本。完整
-schema 见 `sanitize.schema.json`。
+每个命中项都会被替换成 `<HINT:HASH>`，没有可配置的替换文本。完整 schema 见
+`sanitize.schema.json`。
 
 ## 安装
 
@@ -138,8 +142,10 @@ flake 暴露：
 - `~/.config/opencode-sanitizer/config.json`——仅当 `settings` 非空时写入
 
 用 `services.opencode-sanitizer.settings` 定义全局规则；项目级的
-`opencode-sanitizer.json` 则由你自己放在工作目录里，两者同时生效。若要替换
-package，直接设置 `services.opencode-sanitizer.package` 即可（它只是默认值）。
+`opencode-sanitizer.json` 则由你自己放在工作目录里，两者同时生效。`settings`
+会在构建时按 `sanitize.schema.json` 校验，配置写错会让 switch 直接失败，而不是
+悄悄少掉一条规则。若要替换 package，直接设置
+`services.opencode-sanitizer.package` 即可（它只是默认值）。
 如果你更愿意自己应用 overlay，`overlays.opencode-sanitizer` / `overlays.default`
 仍然可用。
 

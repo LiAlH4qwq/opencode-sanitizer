@@ -70,17 +70,21 @@ back in.
 `experimental.chat.messages.transform` already receives a copy of the context, so
 only the outbound request is touched -- the session on disk keeps its originals.
 
-A rule is just an ordinary JavaScript regular expression (or a literal string).
-There is no replacement field any more: each match is replaced by
-`<opencode-sanitize:HASH>`, where `HASH` is the first 16 hex digits of the
-SHA-256 of the matched text. The plugin keeps a `hash -> original` map in memory,
-so the same string always maps to the same token, and the token can be turned
-back into the original whenever the model sends it back. Because the token is
-derived from the match itself rather than from the rule, regex and literal rules
-work identically; only capture-group replacement templates (`$1`, `$&`) are gone.
-The `g` flag is always added automatically. Before each transform the plugin
-checks the config file's mtime and only reparses it when it changes -- so you can
-add or remove rules mid-session without restarting.
+Rules are declared as a map keyed by name, and each rule is just an ordinary
+JavaScript regular expression (or a literal string). There is no replacement
+field any more: each match is replaced by `<HINT:HASH>`. `HASH` is the first 16
+hex digits of the SHA-256 of the matched text, and `HINT` defaults to
+`opencode-sanitizer-identifier-keep-it-as-is` -- a deliberately verbose,
+imperative hint that tells the model to keep the identifier as-is, so it is less
+likely to "helpfully" rewrite or translate the placeholder and break
+restoration. The plugin keeps a `hash -> original` map in memory, so the same
+string always maps to the same token, and the token can be turned back into the
+original whenever the model sends it back. Because the token is derived from the
+match itself rather than from the rule, regex and literal rules work identically;
+only capture-group replacement templates (`$1`, `$&`) are gone. The `g` flag is
+always added automatically. Before each transform the plugin checks the config
+file's mtime and only reparses it when it changes -- so you can add or remove
+rules mid-session without restarting.
 
 Because the map lives only in the plugin's memory for the life of the process,
 an un-restored token cannot be recovered after a restart. In practice the only
@@ -89,47 +93,49 @@ fire no transform hook -- they stay readable to the model but not to you.
 
 ## Configuration
 
-The plugin reads two locations at once and **merges** their rules so both take
-effect, with no ordering and no overriding between them:
+The plugin reads two locations and **merges** their rules by name, so both take
+effect:
 
-1. `<opencode working directory>/opencode-sanitizer.json`
+1. `<opencode working directory>/opencode-sanitizer.json` (wins on conflicts)
 2. `$XDG_CONFIG_HOME/opencode-sanitizer/config.json` (or
    `~/.config/opencode-sanitizer/config.json` when `XDG_CONFIG_HOME` is unset)
 
-When neither file exists, the rule set is empty -- the plugin changes nothing and
-behaves exactly as if it weren't installed. The repository itself ships no default
-config either.
+When the same rule name appears in both files, the working-directory one is kept;
+the same goes for `defaultPlaceholderHint`. When neither file exists, the rule set
+is empty -- the plugin changes nothing and behaves exactly as if it weren't
+installed. The repository itself ships no default config either.
 
 Example:
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/anomalyco/opencode-sanitizer/main/sanitize.schema.json",
-  "rules": [
-    {
-      "name": "false-positive-word",
+  "defaultPlaceholderHint": "opencode-sanitizer-identifier-keep-it-as-is",
+  "rules": {
+    "false-positive-word": {
       "literal": true,
       "pattern": "sensitive-word"
     },
-    {
-      "name": "anthropic-api-key",
+    "anthropic-api-key": {
       "pattern": "sk-ant-[A-Za-z0-9_-]{16,}"
     }
-  ]
+  }
 }
 ```
 
 Fields:
 
-| Field     | Meaning                                                                     |
-| --------- | --------------------------------------------------------------------------- |
-| `name`    | A readable name to recognize the rule in logs.                              |
-| `pattern` | JavaScript regex source; treated as an exact string when `literal` is true. |
-| `flags`   | Regex flags; `g` is always added.                                           |
-| `literal` | Treat `pattern` as a literal instead of a regex.                            |
+| Field                          | Meaning                                                                     |
+| ------------------------------ | --------------------------------------------------------------------------- |
+| `defaultPlaceholderHint`       | Hint used by rules that don't set `placeholderHint`.                        |
+| `rules`                        | Map of rule name to rule; the key is the name shown in logs.                |
+| `rules.<name>.pattern`         | JavaScript regex source; treated as an exact string when `literal` is true. |
+| `rules.<name>.flags`           | Regex flags; `g` is always added.                                           |
+| `rules.<name>.literal`         | Treat `pattern` as a literal instead of a regex.                            |
+| `rules.<name>.placeholderHint` | Overrides `defaultPlaceholderHint` for this rule.                           |
 
-Every match is replaced by `<opencode-sanitize:HASH>`; there is no configurable
-replacement text. See `sanitize.schema.json` for the full schema.
+Every match is replaced by `<HINT:HASH>`; there is no configurable replacement
+text. See `sanitize.schema.json` for the full schema.
 
 ## Installation
 
@@ -163,7 +169,9 @@ The module drops two files into place:
 
 Define global rules with `services.opencode-sanitizer.settings`; the project-level
 `opencode-sanitizer.json` is yours to place in the working directory, and the two
-apply together. To swap out the package, just set
+apply together. `settings` is validated against `sanitize.schema.json` at build
+time, so a malformed payload fails the switch instead of silently dropping a
+rule. To swap out the package, just set
 `services.opencode-sanitizer.package` (it is only a default). And if you'd rather
 apply the overlay yourself, `overlays.opencode-sanitizer` / `overlays.default`
 remain available.
