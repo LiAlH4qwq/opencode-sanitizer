@@ -10,7 +10,8 @@
     "skipLibCheck": true,
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true
   },
-  "include": ["src", "rolldown.config.ts"]
+  "include": ["src", "test", "rolldown.config.ts"]
 }

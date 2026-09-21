@@ -19,6 +19,7 @@
   "scripts": {
     "build": "rolldown -c rolldown.config.ts",
     "typecheck": "tsc --noEmit",
+    "test": "node --test test/",
     "format": "biome format --write .",
     "lint": "biome lint .",
     "check": "biome check --write ."

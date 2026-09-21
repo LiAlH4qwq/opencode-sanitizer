@@ -9,14 +9,9 @@
       "type": "string",
       "description": "Reference to this schema file."
     },
-    "defaultPlaceholderHint": {
-      "type": "string",
-      "default": "6f1a3c8e-2b47-4d90-a15f-9c3e7b0d8214",
-      "description": "Hint used by rules that do not set their own placeholderHint. Each match is replaced by <HINT:HASH>. Defaults to an opaque, meaningless identifier so the model is less tempted to decode it; use something non-descriptive."
-    },
     "rules": {
       "type": "object",
-      "description": "Map of rule name to rule. The key is the name used in logs. Rules whose key collides with one from the other config file are taken from the working-directory config.",
+      "description": "Map of rule name to rule. The key is only a label for logs and never overrides another rule. All rules from the global and working-directory configs are matched and every match is redacted; overlapping matches merge into a single token, so none of their text survives.",
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
@@ -34,10 +29,6 @@
             "type": "boolean",
             "default": false,
             "description": "Treat pattern as a literal string instead of a regular expression."
-          },
-          "placeholderHint": {
-            "type": "string",
-            "description": "Overrides defaultPlaceholderHint for this rule. Must not contain <, > or :."
           }
         }
       }

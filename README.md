@@ -73,23 +73,28 @@ only the outbound request is touched -- the session on disk keeps its originals.
 
 Rules are declared as a map keyed by name, and each rule is just an ordinary
 JavaScript regular expression (or a literal string). There is no replacement
-field any more: each match is replaced by `<HINT:HASH>`. `HASH` is the first 16
-hex digits of the SHA-256 of the matched text, and `HINT` defaults to an opaque,
-meaningless identifier (`6f1a3c8e-2b47-4d90-a15f-9c3e7b0d8214`). An earlier
-design used a verbose, imperative hint here, but models -- especially reasoning
-models -- tended to fixate on it and try to recover the original text, which is
-counterproductive: DeepSeek, for one, aborts the stream the moment a sensitive
-word shows up in streaming reasoning. The opaque hint removes that semantic hook,
-and the redaction notice injected into the system prompt supplies the "copy it
-verbatim, don't decode it" instruction instead. The plugin keeps a
-`hash -> original` map in memory, so the same
-string always maps to the same token, and the token can be turned back into the
-original whenever the model sends it back. Because the token is derived from the
-match itself rather than from the rule, regex and literal rules work identically;
-only capture-group replacement templates (`$1`, `$&`) are gone. The `g` flag is
-always added automatically. Before each transform the plugin checks the config
-file's mtime and only reparses it when it changes -- so you can add or remove
-rules mid-session without restarting.
+field any more: each match is replaced by `<HINT:HASH>`. `HASH` is a random 16
+hex character id, unique within the process and **not derived from the matched
+text** (so it cannot be used to confirm a guessed secret), and `HINT` is a fixed,
+opaque, meaningless identifier (`6f1a3c8e-2b47-4d90-a15f-9c3e7b0d8214`) that is
+not configurable. An earlier design let rules carry a descriptive hint and
+derived `HASH` from the content; both ideas backfired. Models -- especially
+reasoning models -- fixated on the hint and tried to recover the original text,
+which is counterproductive: DeepSeek, for one, aborts the stream the moment a
+sensitive word shows up in streaming reasoning. A content-derived hash also leaks
+whether a guessed value was redacted. Removing the semantic hook, together with
+the redaction notice injected into the system prompt (the "copy it verbatim,
+don't decode it" instruction), keeps the model from trying to restore it. The
+plugin keeps `id -> original` and `original -> id` maps in memory, so the same
+string maps to the same token within a process, and the token can be turned back
+into the original whenever the model sends it back. Every token the plugin has
+emitted is treated as opaque and never rewritten by a rule, so a rule matching
+UUIDs, hex runs, or angle brackets cannot corrupt a token and sanitizing stays
+idempotent. Regex and
+literal rules work identically; only capture-group replacement templates (`$1`,
+`$&`) are gone. The `g` flag is always added automatically. Before each transform
+the plugin checks the config file's mtime and only reparses it when it changes --
+so you can add or remove rules mid-session without restarting.
 
 Because the map lives only in the plugin's memory for the life of the process,
 an un-restored token cannot be recovered after a restart. In practice the only
@@ -98,24 +103,30 @@ fire no transform hook -- they stay readable to the model but not to you.
 
 ## Configuration
 
-The plugin reads two locations and **merges** their rules by name, so both take
-effect:
+The plugin reads two locations and considers **all** of their rules:
 
-1. `<opencode working directory>/opencode-sanitizer.json` (wins on conflicts)
-2. `$XDG_CONFIG_HOME/opencode-sanitizer/config.json` (or
-   `~/.config/opencode-sanitizer/config.json` when `XDG_CONFIG_HOME` is unset)
+1. `$XDG_CONFIG_HOME/opencode-sanitizer/config.json` (or
+   `~/.config/opencode-sanitizer/config.json` when `XDG_CONFIG_HOME` is unset) --
+   the global config
+2. `<opencode working directory>/opencode-sanitizer.json` -- the project config
 
-When the same rule name appears in both files, the working-directory one is kept;
-the same goes for `defaultPlaceholderHint`. When neither file exists, the rule set
-is empty -- the plugin changes nothing and behaves exactly as if it weren't
-installed. The repository itself ships no default config either.
+Rule names are only labels for logs; they are never used to override or
+deduplicate, so a name that appears in both files simply yields two independent
+rules. **Every match from every rule is redacted, with no exception:** where two
+matches overlap, they are merged and replaced by a single token spanning their
+union, so no matched character can survive, not even as a fragment of a match
+that "lost". Matches that do not overlap stay as separate tokens. File order and
+the winner-takes-all heuristics of the earlier release are gone -- they could
+leave fragments of a discarded match behind. When neither file exists, the rule
+set is empty -- the plugin changes nothing and behaves exactly as if it weren't
+installed. The
+repository itself ships no default config either.
 
 Example:
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/lialh4qwq/opencode-sanitizer/main/sanitize.schema.json",
-  "defaultPlaceholderHint": "6f1a3c8e-2b47-4d90-a15f-9c3e7b0d8214",
   "rules": {
     "false-positive-word": {
       "literal": true,
@@ -130,17 +141,16 @@ Example:
 
 Fields:
 
-| Field                          | Meaning                                                                     |
-| ------------------------------ | --------------------------------------------------------------------------- |
-| `defaultPlaceholderHint`       | Hint used by rules that don't set `placeholderHint`.                        |
-| `rules`                        | Map of rule name to rule; the key is the name shown in logs.                |
-| `rules.<name>.pattern`         | JavaScript regex source; treated as an exact string when `literal` is true. |
-| `rules.<name>.flags`           | Regex flags; `g` is always added.                                           |
-| `rules.<name>.literal`         | Treat `pattern` as a literal instead of a regex.                            |
-| `rules.<name>.placeholderHint` | Overrides `defaultPlaceholderHint` for this rule.                           |
+| Field                  | Meaning                                                                     |
+| ---------------------- | --------------------------------------------------------------------------- |
+| `rules`                | Map of rule name to rule; the key is the name shown in logs.                |
+| `rules.<name>.pattern` | JavaScript regex source; treated as an exact string when `literal` is true. |
+| `rules.<name>.flags`   | Regex flags; `g` is always added.                                           |
+| `rules.<name>.literal` | Treat `pattern` as a literal instead of a regex.                            |
 
-Every match is replaced by `<HINT:HASH>`; there is no configurable replacement
-text. See `sanitize.schema.json` for the full schema.
+Every match is replaced by `<HINT:HASH>`, where `HINT` is the fixed opaque
+identifier; there is no configurable replacement text or hint. See
+`sanitize.schema.json` for the full schema.
 
 ## Installation
 
@@ -207,12 +217,14 @@ drop the plugin into `.opencode/plugins/` (project) or
 
 The source lives in `src/sanitizer.ts` and is bundled by
 [rolldown](https://rolldown.rs) into `dist/sanitizer.js`; dependencies are managed
-with pnpm:
+with pnpm. Tests live in `test/` and run on Node's built-in test runner (they
+import the TypeScript source directly, so no build step is needed):
 
 ```sh
 pnpm install
 pnpm build        # bundle to dist/
 pnpm typecheck    # tsc --noEmit
+pnpm test         # node --test test/
 ```
 
 Nix:

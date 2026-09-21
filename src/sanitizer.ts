@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto"
+import { randomBytes } from "node:crypto"
 import { readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
@@ -8,18 +8,25 @@ type Rule = {
   pattern: string
   flags?: string
   literal?: boolean
-  placeholderHint?: string
 }
 
 type SanitizeConfig = {
-  defaultPlaceholderHint?: string
   rules?: Record<string, Rule>
 }
 
 type CompiledRule = {
   name: string
-  hint: string
   regex: RegExp
+}
+
+type NamedRule = {
+  name: string
+  rule: Rule
+}
+
+type Candidate = {
+  start: number
+  end: number
 }
 
 type AnyPart = {
@@ -50,10 +57,12 @@ const APP_NAME = "opencode-sanitizer"
 const APP_CONFIG_FILE = "config.json"
 const PROJECT_CONFIG_FILE = "opencode-sanitizer.json"
 
-const TOKEN_HASH_LEN = 16
-const DEFAULT_PLACEHOLDER_HINT = "6f1a3c8e-2b47-4d90-a15f-9c3e7b0d8214"
-const INVALID_HINT_RE = /[<>:]/
-const TOKEN_RE = new RegExp(`<[^<>:]+:([0-9a-f]{${TOKEN_HASH_LEN}})>`, "g")
+const TOKEN_ID_LEN = 16
+const TOKEN_HINT = "6f1a3c8e-2b47-4d90-a15f-9c3e7b0d8214"
+const TOKEN_RE = new RegExp(
+  `<[^<>:\\s]+\\s*:\\s*([0-9a-f]{${TOKEN_ID_LEN}})\\s*>`,
+  "gi",
+)
 
 const SYSTEM_NOTICE = [
   "Redaction notice: a token shaped like `<HINT:HASH>` -- angle brackets around",
@@ -73,15 +82,16 @@ function appConfigDir(): string {
 }
 
 /**
- * Config sources, highest precedence first. Both are loaded and their rules
- * merged by name; when the same name appears in both, or both set
- * `defaultPlaceholderHint`, the working-directory `opencode-sanitizer.json`
- * wins over the XDG config. The payload defaults to empty when neither exists.
+ * Config sources: the XDG (global) config and the working-directory
+ * `opencode-sanitizer.json`. Both are loaded and their rules combined; rule
+ * names are only labels for logs. Every match from every rule is redacted, and
+ * overlapping matches merge into a single token, so file order and rule names
+ * never change the result. The payload defaults to empty when neither exists.
  */
 function configPaths(directory: string): string[] {
   return [
-    resolve(directory, PROJECT_CONFIG_FILE),
     join(appConfigDir(), APP_CONFIG_FILE),
+    resolve(directory, PROJECT_CONFIG_FILE),
   ]
 }
 
@@ -96,36 +106,27 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
   const tokenToText = new Map<string, string>()
   const textToToken = new Map<string, string>()
 
-  function resolveHint(hint: string | undefined, fallback: string): string {
-    if (typeof hint !== "string" || hint.length === 0) return fallback
-    if (INVALID_HINT_RE.test(hint)) return fallback
-    return hint
-  }
-
-  function tokenFor(match: string, hint: string): string {
-    const key = `${hint}\u0000${match}`
-    const existing = textToToken.get(key)
+  function tokenFor(match: string): string {
+    const existing = textToToken.get(match)
     if (existing !== undefined) return existing
-    const hash = createHash("sha256")
-      .update(match)
-      .digest("hex")
-      .slice(0, TOKEN_HASH_LEN)
-    const token = `<${hint}:${hash}>`
-    textToToken.set(key, token)
-    if (!tokenToText.has(hash)) tokenToText.set(hash, match)
+    let id = randomBytes(TOKEN_ID_LEN / 2).toString("hex")
+    while (tokenToText.has(id)) {
+      id = randomBytes(TOKEN_ID_LEN / 2).toString("hex")
+    }
+    const token = `<${TOKEN_HINT}:${id}>`
+    textToToken.set(match, token)
+    tokenToText.set(id, match)
     return token
   }
 
-  function compile(rules: Record<string, Rule>, defaultHint: string): void {
+  function compile(namedRules: NamedRule[]): void {
     const out: CompiledRule[] = []
-    for (const [name, rule] of Object.entries(rules)) {
+    for (const { name, rule } of namedRules) {
       if (!rule || typeof rule.pattern !== "string") continue
-      const hint = resolveHint(rule.placeholderHint, defaultHint)
       try {
         if (rule.literal) {
           out.push({
             name,
-            hint,
             regex: new RegExp(escapeRegExp(rule.pattern), "g"),
           })
           continue
@@ -133,7 +134,7 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
         const flags = rule.flags?.includes("g")
           ? rule.flags
           : `${rule.flags ?? ""}g`
-        out.push({ name, hint, regex: new RegExp(rule.pattern, flags) })
+        out.push({ name, regex: new RegExp(rule.pattern, flags) })
       } catch (error) {
         void log("warn", `sanitizer: invalid pattern for rule "${name}"`, {
           error: error instanceof Error ? error.message : String(error),
@@ -158,22 +159,14 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
     if (signature === lastSignature) return
     lastSignature = signature
 
-    const rules: Record<string, Rule> = {}
-    let defaultHint: string | undefined
+    const namedRules: NamedRule[] = []
     const loaded: string[] = []
     for (const path of present) {
       try {
         const config = JSON.parse(readFileSync(path, "utf8")) as SanitizeConfig
-        if (
-          defaultHint === undefined &&
-          typeof config.defaultPlaceholderHint === "string" &&
-          config.defaultPlaceholderHint.length > 0
-        ) {
-          defaultHint = config.defaultPlaceholderHint
-        }
         if (config.rules && typeof config.rules === "object") {
           for (const [name, rule] of Object.entries(config.rules)) {
-            if (!(name in rules)) rules[name] = rule
+            namedRules.push({ name, rule })
           }
         }
         loaded.push(path)
@@ -185,42 +178,94 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
       }
     }
 
-    compile(rules, resolveHint(defaultHint, DEFAULT_PLACEHOLDER_HINT))
+    compile(namedRules)
     void log("debug", `sanitizer: loaded ${compiled.length} rule(s)`, {
       paths: loaded,
     })
   }
 
+  function collectCandidates(text: string): Candidate[] {
+    const candidates: Candidate[] = []
+    for (const rule of compiled) {
+      for (const match of text.matchAll(rule.regex)) {
+        const matched = match[0]
+        if (matched.length === 0) continue
+        const start = match.index ?? 0
+        candidates.push({ start, end: start + matched.length })
+      }
+    }
+    return candidates
+  }
+
+  /**
+   * Sanitizes a run of text that is known to contain no existing token, so
+   * matches never span or rewrite a token and the operation is idempotent.
+   *
+   * Every match from every rule is redacted: overlapping matches are merged
+   * into a single token spanning their union, so no matched character can
+   * survive, not even as a fragment of a discarded match.
+   */
+  function sanitizeSegment(text: string): string {
+    const candidates = collectCandidates(text)
+    if (candidates.length === 0) return text
+    candidates.sort((a, b) => a.start - b.start || a.end - b.end)
+    let result = ""
+    let cursor = 0
+    let index = 0
+    while (index < candidates.length) {
+      const start = candidates[index].start
+      let end = candidates[index].end
+      index++
+      while (index < candidates.length && candidates[index].start < end) {
+        if (candidates[index].end > end) end = candidates[index].end
+        index++
+      }
+      result += text.slice(cursor, start)
+      result += tokenFor(text.slice(start, end))
+      cursor = end
+    }
+    return result + text.slice(cursor)
+  }
+
   function sanitizeText(text: string): string {
     if (compiled.length === 0 || typeof text !== "string") return text
-    let result = text
-    for (const rule of compiled) {
-      result = result.replace(rule.regex, (match: string) =>
-        match.length === 0 ? match : tokenFor(match, rule.hint),
-      )
+    if (!text.includes("<")) return sanitizeSegment(text)
+    const result: string[] = []
+    let cursor = 0
+    for (const match of text.matchAll(TOKEN_RE)) {
+      const id = (match[1] ?? "").toLowerCase()
+      if (!tokenToText.has(id)) continue
+      const start = match.index ?? 0
+      if (start > cursor)
+        result.push(sanitizeSegment(text.slice(cursor, start)))
+      result.push(match[0])
+      cursor = start + match[0].length
     }
-    return result
+    if (cursor < text.length) result.push(sanitizeSegment(text.slice(cursor)))
+    return result.join("")
   }
 
   function restoreText(text: string): string {
     if (typeof text !== "string") return text
     return text.replace(
       TOKEN_RE,
-      (whole: string, hash: string) => tokenToText.get(hash) ?? whole,
+      (whole: string, id: string) => tokenToText.get(id.toLowerCase()) ?? whole,
     )
   }
 
   function mapInPlace(
     value: unknown,
     fn: (text: string) => string,
-    depth = 0,
+    seen: WeakSet<object> = new WeakSet(),
   ): void {
-    if (depth > 16 || !value || typeof value !== "object") return
+    if (!value || typeof value !== "object") return
+    if (seen.has(value)) return
+    seen.add(value)
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index++) {
         const item = value[index]
         if (typeof item === "string") value[index] = fn(item)
-        else mapInPlace(item, fn, depth + 1)
+        else mapInPlace(item, fn, seen)
       }
       return
     }
@@ -228,16 +273,16 @@ function createSanitizer(getPaths: () => string[], log: Logger) {
     for (const key of Object.keys(record)) {
       const item = record[key]
       if (typeof item === "string") record[key] = fn(item)
-      else mapInPlace(item, fn, depth + 1)
+      else mapInPlace(item, fn, seen)
     }
   }
 
-  function sanitizeInPlace(value: unknown, depth = 0): void {
-    mapInPlace(value, sanitizeText, depth)
+  function sanitizeInPlace(value: unknown): void {
+    mapInPlace(value, sanitizeText)
   }
 
-  function restoreInPlace(value: unknown, depth = 0): void {
-    mapInPlace(value, restoreText, depth)
+  function restoreInPlace(value: unknown): void {
+    mapInPlace(value, restoreText)
   }
 
   function sanitizePart(part: AnyPart): void {
