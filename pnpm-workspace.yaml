@@ -1,5 +1,8 @@
 allowBuilds:
+  "@google/genai": false
+  esbuild: false
   msgpackr-extract: false
+  protobufjs: false
 
 fetchRetries: 5
 fetchRetryMaxtimeout: 600000

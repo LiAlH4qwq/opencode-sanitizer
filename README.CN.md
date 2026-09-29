@@ -4,6 +4,10 @@
 
 > 在请求发出去之前，把会踩到服务商审核雷区的字符串换掉。
 
+它既能作为 [opencode](https://opencode.ai) 插件运行，也能作为
+[pi coding agent](https://github.com/earendil-works/pi) 扩展运行；两者共用同一份
+配置与同一套规则。
+
 ## 为什么要写它
 
 不是为了防止你上传私钥。是为了不再被那些很「何意味」的敏感词审核恶心到。
@@ -19,7 +23,7 @@ HTTP 400 Bad Request
 日志里一个平凡到不能再平凡的单词，也许只是某句再正常不过的话。可服务商的敏感词
 系统就是认定它有问题，而且不给你任何解释。
 
-如果只是一次报错倒也罢了。要命的是这段内容已经进了会话历史：下一轮 opencode 原样
+如果只是一次报错倒也罢了。要命的是这段内容已经进了会话历史：下一轮 agent 原样
 重发，审核系统又看到同一个字符串，于是又一个 400；再下一轮，再一个 400。你被死死
 钉在原地——不能继续，不能重试，也没法把那条消息单独抠出来删掉。一个小时的上下文，
 说没就没，你只能把整个会话扔掉重来。
@@ -57,6 +61,40 @@ opencode 在拼装一次 LLM 请求前，会依次触发若干"变换钩子"。�
 于是，用户消息、助手正文与推理、工具的输出/输入/元数据、文件片段、工具描述、压缩提示
 词、系统提示词，都会在出站那一刻按你的规则洗一遍；而助手正文和工具参数会在回程时反向
 还原一遍。
+
+### 在 pi coding agent 上做同一件事
+
+pi 的扩展 API 恰好提供了同样的两个时机。`dist/pi.js` 是 pi 扩展，注册在六个事件上：
+
+| 时机                   | opencode 钩子                          | pi 事件                  |
+| ---------------------- | -------------------------------------- | ------------------------ |
+| 系统提示词             | `experimental.chat.system.transform`   | `before_agent_start`     |
+| 出站对话               | `experimental.chat.messages.transform` | `context`                |
+| 工具声明               | `tool.definition`                      | `context_with_system`    |
+| 压缩输入               | `experimental.session.compacting`      | `session_before_compact` |
+| 落盘前的助手正文       | `experimental.text.complete`           | `message_end`            |
+| 执行前的工具参数       | `tool.execute.before`                  | `tool_call`              |
+
+`context` 与 `session_before_compact` 的修改只作用于本次请求：只有出站的模型调用
+会看到令牌，磁盘上的会话仍保留原文。`message_end` 会在消息落盘前替换它，`tool_call`
+会把真实值塞回工具真正收到的参数。pi 的结构性字段（工具名、调用 id、provider、
+stop reason）与不透明载荷（JSON schema 的 `parameters`、base64 的 `data`、
+usage/cost）一律不改写，原因与 opencode 相同：改了会破坏请求，而不是藏住内容。
+
+pi 的 `session_before_compact` 能清洗交给摘要模型的对话，但 API 不提供改写摘要模型
+回写结果的途径，而 `/compact` 的自定义指令在钩子运行前就已被捕获。模型抄进压缩摘要
+的令牌因此会留在会话文件里；除此之外都能往返还原。
+
+### 为什么没有 opencode v2 支持
+
+opencode v2 用按域注册的钩子 API 取代了 v1 返回钩子对象的写法。出站的一半可以干净
+映射——系统/消息/工具用 `ctx.session.hook("context")`，工具参数用
+`ctx.tool.hook("execute.before")`——但 v2 删掉了 `experimental.text.complete`，
+且没有替代品。在助手正文定稿与落盘之间没有任何钩子，模型回吐的令牌会直接写进会话
+文件、再也无法还原（令牌表也不跨重启存活）。原始 `http.response` 钩子理论上能改写
+流式响应体，但它面对的是解析前的、服务商特有的 JSON/SSE；在其中替换任意还原文本会
+破坏载荷，无法做出通用且安全的实现。本插件的全部契约就是可逆，所以宁可不支持 v2，
+也不发一个单向版本。
 
 `experimental.chat.messages.transform` 拿到的本就是上下文的副本，所以被改动的只有
 出站请求——磁盘上的会话仍保留原文。
@@ -136,8 +174,8 @@ flake 暴露：
 - `overlays.opencode-sanitizer` 与 `overlays.default`
 - `homeModules.opencode-sanitizer` 与 `homeModules.default`
 
-加好 input，导入 home-manager 模块并打开开关即可——模块会自带自己的 package，
-你不需要手动接 overlay：
+加好 input，导入 home-manager 模块，然后按需分别打开各个目标——模块会自带自己的
+package，你不需要手动接 overlay：
 
 ```nix
 {
@@ -146,7 +184,7 @@ flake 暴露：
   # 在你的 home-manager 配置中
   imports = [ inputs.opencode-sanitizer.homeModules.default ];
 
-  services.opencode-sanitizer.enable = true;
+  services.opencode-sanitizer.opencode.enable = true;
 }
 ```
 
@@ -154,6 +192,12 @@ flake 暴露：
 
 - `~/.config/opencode/plugins/opencode-sanitizer.js`——插件本体
 - `~/.config/opencode-sanitizer/config.json`——仅当 `settings` 非空时写入
+
+再设置 `services.opencode-sanitizer.pi-coding-agent.enable = true`，就会把 pi
+扩展链接到 `~/.pi/agent/extensions/opencode-sanitizer.js`；
+`pi-coding-agent.agentDir` 可覆盖 agent 目录（pi 默认从 `PI_CODING_AGENT_DIR`
+读取）。两个目标共用同一份 `settings` 与同一个项目级 `opencode-sanitizer.json`，
+且默认都是关闭的。
 
 用 `services.opencode-sanitizer.settings` 定义全局规则；项目级的
 `opencode-sanitizer.json` 则由你自己放在工作目录里，两者同时生效。`settings`
@@ -184,11 +228,24 @@ pnpm build
 开发时可以指向 `./src/sanitizer.ts`；此外把插件放进 `.opencode/plugins/`（项目级）
 或 `~/.config/opencode/plugins/`（全局）也能让 opencode 自动加载。
 
+#### pi coding agent
+
+同一次构建还会产出 `dist/pi.js`（开发时也可直接指向 `src/pi.ts`）。把它以
+`opencode-sanitizer.js` 放进 `~/.pi/agent/extensions/`，或放进项目的
+`.pi/extensions/`，也可以只给单次运行加载：
+
+```sh
+pi --extension ./dist/pi.js
+```
+
+规则同样来自那两个文件；项目配置按 pi 的工作目录解析。
+
 ## 开发
 
-源码在 `src/sanitizer.ts`，用 [rolldown](https://rolldown.rs) 打包到
-`dist/sanitizer.js`；依赖由 pnpm 管理。测试在 `test/`，跑在 Node 自带的测试运行器上
-（直接引入 TypeScript 源码，无需先构建）：
+共享引擎在 `src/engine.ts`。`src/sanitizer.ts`（opencode 插件）与 `src/pi.ts`
+（pi 扩展）由 [rolldown](https://rolldown.rs) 分别打包成自包含的
+`dist/sanitizer.js` 与 `dist/pi.js`；依赖由 pnpm 管理。测试在 `test/`，跑在 Node
+自带的测试运行器上（直接引入 TypeScript 源码，无需先构建）：
 
 ```sh
 pnpm install

@@ -4,6 +4,10 @@
 
 > Swap out the strings that would trip your provider's moderation, before the request goes out.
 
+It ships as an [opencode](https://opencode.ai) plugin and as a
+[pi coding agent](https://github.com/earendil-works/pi) extension; both share one
+config and one rule set.
+
 ## Why this exists
 
 It is not about stopping you from uploading private keys. It is about never again
@@ -22,7 +26,7 @@ log, maybe just a completely normal sentence. But the provider's sensitive-word
 system has decided it's a problem, and it won't tell you why.
 
 If it were a one-off error, fine. The fatal part is that the content is already in
-the conversation history: next turn opencode resends it verbatim, moderation sees
+the conversation history: next turn the agent resends it verbatim, moderation sees
 the same string again, so it's another 400; and the turn after that, another. You
 are pinned in place -- you can't continue, you can't retry, and you can't carve
 that one message out to delete it. An hour of context, gone; your only move is to
@@ -71,6 +75,48 @@ So user messages, the assistant's prose and reasoning, tool output/input/metadat
 file parts, tool descriptions, compaction prompts, and the system prompt all get a
 pass through your rules at the moment they go out; and assistant text plus tool
 arguments get a reverse pass on the way back in.
+
+### The same job on the pi coding agent
+
+Pi's extension API exposes the same two moments. `dist/pi.js` is a pi extension
+that registers on six events:
+
+| Timing                          | opencode hook                           | pi event                 |
+| ------------------------------- | --------------------------------------- | ------------------------ |
+| System prompt                   | `experimental.chat.system.transform`    | `before_agent_start`     |
+| Outbound conversation           | `experimental.chat.messages.transform`  | `context`                |
+| Tool declarations               | `tool.definition`                       | `context_with_system`    |
+| Compaction input                | `experimental.session.compacting`       | `session_before_compact` |
+| Assistant text before storage   | `experimental.text.complete`            | `message_end`            |
+| Tool arguments before execution | `tool.execute.before`                   | `tool_call`              |
+
+`context` and `session_before_compact` changes are request-local: only the
+outgoing model call sees the tokens, and the session file keeps its originals.
+`message_end` replaces a finalized message before it is stored, and `tool_call`
+puts the real values back into the arguments a tool receives. Pi's structural keys
+(tool names, call ids, providers, stop reasons) and opaque payloads (JSON-schema
+`parameters`, base64 `data`, usage/cost) are never rewritten, for the same reason
+as in opencode: rewriting them would break the request instead of hiding content.
+
+Pi's `session_before_compact` can sanitize the transcript handed to the
+summarizer, but the API gives no way to rewrite the summary the summarizer writes
+back, and a `/compact` custom instruction is captured before the hook runs. A
+token the model copies into a compaction summary therefore stays in the session
+file; everything else round-trips.
+
+### Why there is no opencode v2 support
+
+opencode v2 replaced the v1 hook object with a domain hook API. The outbound half
+maps cleanly -- `ctx.session.hook("context")` for system/messages/tools and
+`ctx.tool.hook("execute.before")` for tool arguments -- but v2 dropped
+`experimental.text.complete` and has no replacement. Nothing runs between the
+assistant's finished prose and its durable write, so a token the model echoes back
+would be written to the session file and could never be restored (the token map
+does not survive a restart). The raw `http.response` hook could in principle
+rewrite the streamed body, but it sees provider-specific JSON/SSE before parsing,
+where substituting arbitrary restored text can corrupt the payload; a generic,
+safe implementation is not possible. Since this plugin's entire contract is
+reversibility, v2 is not supported rather than shipped in a one-way form.
 
 `experimental.chat.messages.transform` already receives a copy of the context, so
 only the outbound request is touched -- the session on disk keeps its originals.
@@ -166,8 +212,9 @@ The flake exposes:
 - `overlays.opencode-sanitizer` and `overlays.default`
 - `homeModules.opencode-sanitizer` and `homeModules.default`
 
-Add the input, import the home-manager module, flip it on -- the module brings its
-own package, so you don't have to wire up the overlay yourself:
+Add the input, import the home-manager module, then opt each target in
+independently -- the module brings its own package, so you don't have to wire up
+the overlay yourself:
 
 ```nix
 {
@@ -176,7 +223,7 @@ own package, so you don't have to wire up the overlay yourself:
   # in your home-manager configuration
   imports = [ inputs.opencode-sanitizer.homeModules.default ];
 
-  services.opencode-sanitizer.enable = true;
+  services.opencode-sanitizer.opencode.enable = true;
 }
 ```
 
@@ -185,6 +232,12 @@ The module drops two files into place:
 - `~/.config/opencode/plugins/opencode-sanitizer.js` -- the plugin itself
 - `~/.config/opencode-sanitizer/config.json` -- written only when `settings` is
   non-empty
+
+Set `services.opencode-sanitizer.pi-coding-agent.enable = true` to also link the
+pi extension into `~/.pi/agent/extensions/opencode-sanitizer.js`;
+`pi-coding-agent.agentDir` overrides the agent directory (which pi otherwise
+takes from `PI_CODING_AGENT_DIR`). Both targets read the same `settings` and the
+same project-level `opencode-sanitizer.json`, and both are off by default.
 
 Define global rules with `services.opencode-sanitizer.settings`; the project-level
 `opencode-sanitizer.json` is yours to place in the working directory, and the two
@@ -217,12 +270,28 @@ too, so during development you can point at `./src/sanitizer.ts`; alternatively,
 drop the plugin into `.opencode/plugins/` (project) or
 `~/.config/opencode/plugins/` (global) and let opencode auto-load it.
 
+#### pi coding agent
+
+The same build produces `dist/pi.js` (or point pi at `src/pi.ts` during
+development). Drop it into `~/.pi/agent/extensions/` as
+`opencode-sanitizer.js`, place it in a project's `.pi/extensions/`, or load it for
+a single run:
+
+```sh
+pi --extension ./dist/pi.js
+```
+
+Rules come from the same two files; the project config is resolved against pi's
+working directory.
+
 ## Development
 
-The source lives in `src/sanitizer.ts` and is bundled by
-[rolldown](https://rolldown.rs) into `dist/sanitizer.js`; dependencies are managed
-with pnpm. Tests live in `test/` and run on Node's built-in test runner (they
-import the TypeScript source directly, so no build step is needed):
+The shared engine lives in `src/engine.ts`. `src/sanitizer.ts` (the opencode
+plugin) and `src/pi.ts` (the pi extension) are bundled by
+[rolldown](https://rolldown.rs) into the self-contained `dist/sanitizer.js` and
+`dist/pi.js`; dependencies are managed with pnpm. Tests live in `test/` and run on
+Node's built-in test runner (they import the TypeScript sources directly, so no
+build step is needed):
 
 ```sh
 pnpm install

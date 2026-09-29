@@ -14,6 +14,9 @@
   "exports": {
     ".": {
       "import": "./dist/sanitizer.js"
+    },
+    "./pi": {
+      "import": "./dist/pi.js"
     }
   },
   "scripts": {
@@ -26,6 +29,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",
+    "@earendil-works/pi-coding-agent": "^0.87.1",
     "@opencode-ai/plugin": "^1.18.31",
     "@opencode-ai/sdk": "^1.18.31",
     "@types/node": "^24",

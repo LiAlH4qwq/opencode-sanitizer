@@ -32,7 +32,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     fetcherVersion = 4;
     hash =
       {
-        x86_64-linux = "sha256-ifyqzU1pDms2nTmSCDwITc2KYP88R9dz1YAeowz6cS8=";
+        x86_64-linux = "sha256-MkHKWJIjKG5d5YPvAymKoOo3l3kwLkcOqTUDUAuTSak=";
       }
       .${stdenvNoCC.hostPlatform.system} or lib.fakeHash;
   };
@@ -54,6 +54,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
     mkdir -p "$out"
     cp dist/sanitizer.js "$out/sanitizer.js"
+    cp dist/pi.js "$out/pi.js"
     cp package.json "$out/package.json"
     cp ${../sanitize.schema.json} "$out/sanitize.schema.json"
 
@@ -61,7 +62,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   '';
 
   meta = {
-    description = "opencode plugin that reversibly pseudonymizes configured strings before context is sent to the LLM";
+    description = "Reversibly pseudonymizes configured strings before context reaches the LLM, for opencode and the pi coding agent";
     platforms = lib.platforms.all;
   };
 })

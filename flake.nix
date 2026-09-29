@@ -1,5 +1,5 @@
 {
-  description = "opencode-sanitizer: an opencode plugin that sanitizes context before it reaches the LLM API";
+  description = "opencode-sanitizer: reversibly sanitize context before it reaches the LLM API, for opencode and the pi coding agent";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
